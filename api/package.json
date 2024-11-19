@@ -1,0 +1,16 @@
+{
+  "name": "image-categorizer",
+  "module": "index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "hono": "^4.0.0"
+  },
+  "devDependencies": {
+    "bun-types": "latest",
+    "eslint": "9.14.0"
+  }
+}

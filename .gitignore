@@ -1,0 +1,7 @@
+# deps
+node_modules/
+.DS_Store
+api/images/*
+data/*
+api/yes/*
+api/no/*
