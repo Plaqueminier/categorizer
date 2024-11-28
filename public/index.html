@@ -19,8 +19,8 @@
             color: #ffffff;
         }
         img {
-            width: 128px;
-            height: 128px;
+            width: 200px;
+            height: 200px;
             object-fit: contain;
             margin: 20px 0;
             /* Add border for better visibility on dark background */
@@ -103,6 +103,16 @@
                 <div class="stat-label">No</div>
             </div>
         </div>
+        <div class="stats" style="margin-top: 10px;">
+            <div class="stat-item">
+                <div class="stat-value" id="modelPrediction">-</div>
+                <div class="stat-label">AI Prediction</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="predictionConfidence">-</div>
+                <div class="stat-label">Confidence</div>
+            </div>
+        </div>
         <div class="buttons">
             <button id="yesBtn">Yes</button>
             <button id="noBtn">No</button>
@@ -145,10 +155,22 @@
                 const data = await response.json();
                 currentFilename = data.filename;
                 document.getElementById('currentImage').src = `http://localhost:3009${data.url}`;
+                
+                if (data.prediction) {
+                    document.getElementById('modelPrediction').textContent = data.prediction.toUpperCase();
+                    document.getElementById('predictionConfidence').textContent = 
+                        `${(data.confidence * 100).toFixed(1)}%`;
+                    
+                    const predictionEl = document.getElementById('modelPrediction');
+                    predictionEl.style.color = data.confidence > 0.8 ? '#4CAF50' : '#FFA500';
+                }
+
                 await updateStats();
             } catch (error) {
                 alert('No more images to categorize!');
                 document.getElementById('currentImage').src = '';
+                document.getElementById('modelPrediction').textContent = '-';
+                document.getElementById('predictionConfidence').textContent = '-';
                 document.querySelectorAll('button').forEach(btn => btn.disabled = true);
             }
         }

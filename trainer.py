@@ -4,12 +4,9 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms, models
 from PIL import Image
-import os
 import ssl
-import certifi
-from sklearn.model_selection import train_test_split
+from pathlib import Path
 import time
-import numpy as np
 from torchvision.models import ResNet18_Weights, ResNet50_Weights
 
 # SSL Certificate fix for macOS
@@ -40,96 +37,89 @@ class ModelTrainer:
         self.model = self.create_model()
         self.model.to(device)
 
-        # Calculate model size
-        self.model_size = (
-            sum(p.numel() for p in self.model.parameters()) / 1e6
-        )  # Size in millions
-
     def create_model(self):
         try:
             if self.model_name == "resnet18":
-                # Try loading with SSL verification first
                 model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
+                num_features = 512
             else:  # resnet50
                 model = models.resnet50(weights=ResNet50_Weights.DEFAULT)
+                num_features = 2048
+
+            # Modify final layer for binary classification
+            model.fc = nn.Sequential(nn.Linear(num_features, 1), nn.Sigmoid())
+            return model
+
         except Exception as e:
-            print(f"Warning: Error loading pretrained weights: {e}")
-            print("Attempting to load model without pretrained weights...")
-            if self.model_name == "resnet18":
-                model = models.resnet18(pretrained=False)
-            else:  # resnet50
-                model = models.resnet50(pretrained=False)
-
-        # Modify final layer for binary classification
-        if self.model_name == "resnet18":
-            model.fc = nn.Sequential(nn.Linear(512, 1), nn.Sigmoid())
-        else:  # resnet50 has a different number of features
-            model.fc = nn.Sequential(nn.Linear(2048, 1), nn.Sigmoid())
-        return model
-
-    def train_epoch(self, train_loader, criterion, optimizer):
-        self.model.train()
-        running_loss = 0.0
-        correct = 0
-        total = 0
-        batch_times = []
-
-        for inputs, labels in train_loader:
-            start_time = time.time()
-
-            inputs, labels = inputs.to(self.device), labels.to(self.device)
-
-            optimizer.zero_grad()
-            outputs = self.model(inputs).squeeze()
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-
-            batch_time = time.time() - start_time
-            batch_times.append(batch_time)
-
-            running_loss += loss.item()
-            predicted = (outputs > 0.5).float()
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-
-        return (
-            running_loss / len(train_loader),
-            100 * correct / total,
-            np.mean(batch_times),
-        )
-
-    def validate(self, val_loader, criterion):
-        self.model.eval()
-        running_loss = 0.0
-        correct = 0
-        total = 0
-        batch_times = []
-
-        with torch.no_grad():
-            for inputs, labels in val_loader:
-                start_time = time.time()
-
-                inputs, labels = inputs.to(self.device), labels.to(self.device)
-                outputs = self.model(inputs).squeeze()
-                loss = criterion(outputs, labels)
-
-                batch_time = time.time() - start_time
-                batch_times.append(batch_time)
-
-                running_loss += loss.item()
-                predicted = (outputs > 0.5).float()
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-
-        return (
-            running_loss / len(val_loader),
-            100 * correct / total,
-            np.mean(batch_times),
-        )
+            print(f"Error loading model: {e}")
+            raise
 
 
-def compare_models(yes_folder, no_folder, num_epochs=10):
+def calculate_class_weights(labels, device):
+    n_samples = len(labels)
+    n_classes = 2  # binary classification
+
+    # Count samples in each class
+    count_no = labels.count(0)
+    count_yes = labels.count(1)
+
+    # Calculate weights: higher weight for minority class
+    weight_yes = n_samples / (n_classes * count_yes)
+    weight_no = n_samples / (n_classes * count_no)
+
+    print(f"Class weights - No: {weight_no:.2f}, Yes: {weight_yes:.2f}")
+    return torch.tensor([weight_no, weight_yes], device=device)
+
+
+def load_dataset(base_path):
+    """
+    Load images from a directory structure:
+    base_path/
+        ├── train/
+        │   ├── yes/
+        │   └── no/
+        └── val/
+            ├── yes/
+            └── no/
+    """
+    base_path = Path(base_path)
+    datasets = {}
+
+    for split in ["train", "val"]:
+        image_paths = []
+        labels = []
+
+        # Load 'yes' images
+        yes_path = base_path / split / "yes"
+        if yes_path.exists():
+            for img_path in yes_path.glob("*.[jJ][pP][gG]"):
+                image_paths.append(str(img_path))
+                labels.append(1)
+            for img_path in yes_path.glob("*.[pP][nN][gG]"):
+                image_paths.append(str(img_path))
+                labels.append(1)
+
+        # Load 'no' images
+        no_path = base_path / split / "no"
+        if no_path.exists():
+            for img_path in no_path.glob("*.[jJ][pP][gG]"):
+                image_paths.append(str(img_path))
+                labels.append(0)
+            for img_path in no_path.glob("*.[pP][nN][gG]"):
+                image_paths.append(str(img_path))
+                labels.append(0)
+
+        datasets[split] = (image_paths, labels)
+
+        print(f"{split} set:")
+        print(f"  Total images: {len(image_paths)}")
+        print(f"  Yes images: {labels.count(1)}")
+        print(f"  No images: {labels.count(0)}\n")
+
+    return datasets
+
+
+def train_model(base_path, model_name="resnet18", num_epochs=10, batch_size=32):
     # Set device
     if torch.backends.mps.is_available():
         device = torch.device("mps")
@@ -142,90 +132,131 @@ def compare_models(yes_folder, no_folder, num_epochs=10):
     # Data preprocessing
     transform = transforms.Compose(
         [
-            transforms.Resize((224, 224)),
+            transforms.Resize(224, antialias=True),
+            transforms.CenterCrop(224),
             transforms.RandomHorizontalFlip(),
-            transforms.RandomRotation(10),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ]
     )
 
-    # Load and split data
-    image_paths = [
-        (os.path.join(yes_folder, f), 1)
-        for f in os.listdir(yes_folder)
-        if f.lower().endswith((".jpg", ".jpeg", ".png"))
-    ] + [
-        (os.path.join(no_folder, f), 0)
-        for f in os.listdir(no_folder)
-        if f.lower().endswith((".jpg", ".jpeg", ".png"))
-    ]
+    # Load datasets
+    datasets = load_dataset(base_path)
+    if not datasets["train"][0] or not datasets["val"][0]:
+        raise ValueError("No images found in training or validation directories")
 
-    if not image_paths:
-        raise ValueError(f"No images found in {yes_folder} or {no_folder}")
-
-    print(f"Total images found: {len(image_paths)}")
-    print(f"Yes images: {sum(1 for _, label in image_paths if label == 1)}")
-    print(f"No images: {sum(1 for _, label in image_paths if label == 0)}")
-
-    paths, labels = zip(*image_paths)
-    train_paths, val_paths, train_labels, val_labels = train_test_split(
-        paths, labels, test_size=0.2, random_state=42
-    )
-
-    # Create datasets
-    train_dataset = ImageDataset(train_paths, train_labels, transform)
-    val_dataset = ImageDataset(val_paths, val_labels, transform)
+    # Calculate class weights
+    class_weights = calculate_class_weights(datasets["train"][1], device)
 
     # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+    train_dataset = ImageDataset(datasets["train"][0], datasets["train"][1], transform)
+    val_dataset = ImageDataset(datasets["val"][0], datasets["val"][1], transform)
 
-    results = {}
-    for model_name in ["resnet18", "resnet50"]:
-        print(f"\nTraining {model_name.upper()}...")
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-        trainer = ModelTrainer(model_name, device)
-        criterion = nn.BCELoss()
-        optimizer = optim.Adam(trainer.model.parameters(), lr=0.001)
+    # Initialize model and training
+    trainer = ModelTrainer(model_name, device)
+    criterion = nn.BCELoss(
+        reduction="none"
+    )  # Changed to 'none' to apply weights per sample
+    optimizer = optim.Adam(trainer.model.parameters(), lr=0.001)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", patience=2)
 
-        model_metrics = {
-            "train_losses": [],
-            "train_accs": [],
-            "val_losses": [],
-            "val_accs": [],
-            "train_times": [],
-            "val_times": [],
-            "model_size": trainer.model_size,
-        }
+    best_val_acc = 0
+    metrics = {
+        "train_loss": [],
+        "train_acc": [],
+        "val_loss": [],
+        "val_acc": [],
+        "epoch_times": [],
+    }
 
-        for epoch in range(num_epochs):
-            print(f"\nEpoch {epoch + 1}/{num_epochs}")
+    for epoch in range(num_epochs):
+        epoch_start = time.time()
+        print(f"\nEpoch {epoch + 1}/{num_epochs}")
 
-            train_loss, train_acc, train_time = trainer.train_epoch(
-                train_loader, criterion, optimizer
-            )
-            model_metrics["train_losses"].append(train_loss)
-            model_metrics["train_accs"].append(train_acc)
-            model_metrics["train_times"].append(train_time)
+        # Training phase
+        trainer.model.train()
+        train_loss = 0
+        train_correct = 0
+        train_total = 0
 
-            val_loss, val_acc, val_time = trainer.validate(val_loader, criterion)
-            model_metrics["val_losses"].append(val_loss)
-            model_metrics["val_accs"].append(val_acc)
-            model_metrics["val_times"].append(val_time)
+        for inputs, labels in train_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
 
-            print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
-            print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
-            print(
-                f"Batch times - Train: {train_time * 1000:.1f}ms, Val: {val_time * 1000:.1f}ms"
-            )
+            optimizer.zero_grad()
+            outputs = trainer.model(inputs).squeeze()
 
-        # Save model
-        torch.save(trainer.model.state_dict(), f"{model_name}_binary_classifier.pth")
-        results[model_name] = model_metrics
+            # Apply class weights to loss
+            loss = criterion(outputs, labels)
+            weighted_loss = loss * class_weights[labels.long()]
+            loss = weighted_loss.mean()
 
-    return results
+            loss.backward()
+            optimizer.step()
+
+            train_loss += loss.item()
+            predicted = (outputs > 0.5).float()
+            train_total += labels.size(0)
+            train_correct += (predicted == labels).sum().item()
+
+        # Validation phase
+        trainer.model.eval()
+        val_loss = 0
+        val_correct = 0
+        val_total = 0
+
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                inputs, labels = inputs.to(device), labels.to(device)
+                outputs = trainer.model(inputs).squeeze()
+
+                # Apply class weights to validation loss too
+                loss = criterion(outputs, labels)
+                weighted_loss = loss * class_weights[labels.long()]
+                loss = weighted_loss.mean()
+
+                val_loss += loss.item()
+                predicted = (outputs > 0.5).float()
+                val_total += labels.size(0)
+                val_correct += (predicted == labels).sum().item()
+
+        # Calculate metrics
+        epoch_train_loss = train_loss / len(train_loader)
+        epoch_train_acc = 100 * train_correct / train_total
+        epoch_val_loss = val_loss / len(val_loader)
+        epoch_val_acc = 100 * val_correct / val_total
+        epoch_time = time.time() - epoch_start
+
+        # Store metrics
+        metrics["train_loss"].append(epoch_train_loss)
+        metrics["train_acc"].append(epoch_train_acc)
+        metrics["val_loss"].append(epoch_val_loss)
+        metrics["val_acc"].append(epoch_val_acc)
+        metrics["epoch_times"].append(epoch_time)
+
+        # Update learning rate
+        scheduler.step(epoch_val_loss)
+
+        # Save best model
+        if epoch_val_acc > best_val_acc:
+            best_val_acc = epoch_val_acc
+            torch.save(trainer.model.state_dict(), f"best_{model_name}_model.pth")
+
+        # Print progress
+        print(f"Train Loss: {epoch_train_loss:.4f}, Train Acc: {epoch_train_acc:.2f}%")
+        print(f"Val Loss: {epoch_val_loss:.4f}, Val Acc: {epoch_val_acc:.2f}%")
+        print(f"Epoch time: {epoch_time:.1f}s")
+
+    return metrics
 
 
 if __name__ == "__main__":
-    results = compare_models("api/yes", "api/no")
+    # Example usage
+    metrics = train_model(
+        base_path="data",  # Your base directory containing train and val folders
+        model_name="resnet18",
+        num_epochs=10,
+        batch_size=64,
+    )

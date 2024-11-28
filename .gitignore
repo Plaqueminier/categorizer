@@ -8,3 +8,7 @@ api/no/*
 venv/
 resnet18_binary_classifier.pth
 resnet50_binary_classifier.pth
+yes/
+no/
+api/models/*
+extracted/
