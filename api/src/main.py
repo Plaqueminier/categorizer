@@ -22,6 +22,8 @@ app.add_middleware(
 
 # Serve static files
 app.mount("/images", StaticFiles(directory="images"), name="images")
+app.mount("/static_yes", StaticFiles(directory="../yes"), name="yes_images")
+app.mount("/static_no", StaticFiles(directory="../no"), name="no_images")
 
 
 class TransferModel(nn.Module):
@@ -202,6 +204,113 @@ async def get_image_count():
             "yes": count_images("yes"),
             "no": count_images("no"),
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ReviewAction(BaseModel):
+    filename: str
+    currentFolder: str
+    action: str
+
+
+@app.get("/api/review/{folder}")
+async def get_review_image(folder: str):
+    try:
+        if folder not in ["yes", "no"]:
+            raise HTTPException(status_code=400, detail="Invalid folder")
+
+        source_dir = Path(f"../{folder}")
+        if not source_dir.exists():
+            raise HTTPException(status_code=404, detail=f"No {folder} directory found")
+
+        # Get all image files that haven't been reviewed
+        image_files = [
+            f
+            for f in source_dir.glob("*")
+            if f.is_file()
+            and not f.name.startswith(".")
+            and "reviewed" not in f.stem  # Exclude reviewed files
+        ]
+
+        print(f"Found {len(image_files)} images in {folder} folder")
+
+        if not image_files:
+            raise HTTPException(status_code=404, detail=f"No images in {folder} folder")
+
+        # Filter images based on filename confidence prefix
+        review_images = []
+        for img in image_files:
+            try:
+                # Extract confidence from filename (first 2 digits)
+                confidence = int(img.name[:2]) / 100.0
+
+                # For yes folder, review images with confidence < 0.3
+                # For no folder, review images with confidence > 0.7
+                if (folder == "yes" and confidence < 0.3) or (
+                    folder == "no" and confidence > 0.7
+                ):
+                    review_images.append((img, confidence))
+            except (ValueError, IndexError):
+                # Skip files that don't have the expected format
+                continue
+
+        if not review_images:
+            raise HTTPException(status_code=404, detail="No images to review")
+
+        # Sort by confidence (highest first for no folder, lowest first for yes folder)
+        review_images.sort(key=lambda x: x[1], reverse=(folder == "no"))
+        img_path, confidence = review_images[0]
+
+        # Count remaining reviewable images
+        remaining = len(review_images)
+
+        return {
+            "filename": img_path.name,
+            "url": f"/static_{folder}/{img_path.name}",
+            "confidence": confidence,
+            "remaining": remaining,
+            "currentFolder": folder,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/review/action")
+async def handle_review_action(request: ReviewAction):
+    try:
+        if request.currentFolder not in ["yes", "no"]:
+            raise HTTPException(status_code=400, detail="Invalid folder")
+        if request.action not in ["move", "keep"]:
+            raise HTTPException(status_code=400, detail="Invalid action")
+
+        source_path = (
+            Path(f"../{request.currentFolder}") / request.filename
+        )  # Use root folder path
+        if not source_path.exists():
+            raise HTTPException(status_code=404, detail="Image not found")
+
+        if request.action == "move":
+            # Move to opposite folder
+            target_folder = "no" if request.currentFolder == "yes" else "yes"
+            target_dir = Path(target_folder)  # Use root folder path
+            target_dir.mkdir(exist_ok=True)
+            target_path = target_dir / request.filename
+            shutil.move(str(source_path), str(target_path))
+        else:  # keep action
+            # Rename the file to add 'reviewed' suffix before the extension
+            name_parts = source_path.stem.split("_")  # Split by underscore
+            if len(name_parts) > 1:
+                # If filename already has parts after confidence (e.g. "05_original_name.jpg")
+                new_name = f"{name_parts[0]}_reviewed_{'_'.join(name_parts[1:])}{source_path.suffix}"
+            else:
+                # If filename only has confidence (e.g. "05.jpg")
+                new_name = f"{source_path.stem}_reviewed{source_path.suffix}"
+
+            target_path = source_path.parent / new_name
+            shutil.move(str(source_path), str(target_path))
+
+        return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

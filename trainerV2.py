@@ -10,6 +10,7 @@ import shutil
 from tqdm import tqdm
 import numpy as np
 import ssl
+from torchvision.models import ResNet18_Weights
 
 # Add SSL certificate verification
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -46,11 +47,11 @@ class ImageDataset(Dataset):
 
 
 class TransferModel(nn.Module):
-    def __init__(self, pretrained=True):
+    def __init__(self, weights=ResNet18_Weights.DEFAULT):
         super(TransferModel, self).__init__()
 
-        # Use ResNet18 with same architecture as training
-        self.resnet = models.resnet18(pretrained=pretrained)
+        # Use ResNet18 with specified weights
+        self.resnet = models.resnet18(weights=weights)
 
         # Add batch normalization and dropout layers
         self.resnet.layer1 = nn.Sequential(
@@ -207,9 +208,9 @@ def test(model, test_loader, criterion, device):
 
 def main():
     # Reduced batch size for CPU
-    BATCH_SIZE = 32
+    BATCH_SIZE = 16
     # Reduced epochs for faster training
-    NUM_EPOCHS = 50
+    NUM_EPOCHS = 100
 
     if torch.backends.mps.is_available():
         DEVICE = torch.device("mps")
@@ -280,7 +281,7 @@ def main():
     )
 
     # Initialize model and training components
-    model = TransferModel(pretrained=True).to(DEVICE)
+    model = TransferModel(weights=ResNet18_Weights.DEFAULT).to(DEVICE)
 
     # Calculate class weights
     total_samples = len(train_dataset)
@@ -290,22 +291,21 @@ def main():
 
     criterion = nn.BCELoss(weight=pos_weight)
 
-    # Optimizer with initial learning rate of 0.0003
+    # Optimizer with a higher initial learning rate
     optimizer = optim.AdamW(
         model.parameters(),
-        lr=0.0003,  # Initial learning rate
+        lr=0.0003,  # Adjusted initial learning rate
         weight_decay=0.01,
         betas=(0.9, 0.999),
     )
 
-    # Scheduler that adjusts the learning rate
+    # Scheduler without verbose
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode="max",
-        factor=0.3,  # Reduces lr by multiplying by 0.3 when plateauing
-        patience=5,  # Waits 5 epochs before reducing lr
-        verbose=True,  # Prints message when lr changes
-        min_lr=1e-6,  # Won't reduce lr below this value
+        factor=0.3,  # Less aggressive reduction factor
+        patience=5,  # Reduced patience to adapt quicker
+        min_lr=1e-5,  # Higher minimum learning rate
     )
 
     best_val_acc = 0
@@ -313,7 +313,7 @@ def main():
 
     for epoch in range(NUM_EPOCHS):
         print(f"\nEpoch {epoch + 1}/{NUM_EPOCHS}")
-        print(f"Learning rates: {[group['lr'] for group in optimizer.param_groups]}")
+        print(f"Learning rates: {scheduler.get_last_lr()}")
 
         train_loss, train_acc = train_epoch(
             model, train_loader, criterion, optimizer, DEVICE

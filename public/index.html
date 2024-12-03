@@ -84,9 +84,27 @@
             opacity: 0.5;
             cursor: not-allowed;
         }
+        nav {
+            margin-bottom: 20px;
+        }
+        nav a {
+            color: #2196F3;
+            text-decoration: none;
+            margin: 0 10px;
+            padding: 5px 10px;
+            border-radius: 4px;
+            transition: background-color 0.2s;
+        }
+        nav a:hover {
+            background-color: #2d2d2d;
+        }
     </style>
 </head>
 <body>
+    <nav>
+        <a href="index.html" style="color: #4CAF50;">Main Categorizer</a> |
+        <a href="review.html">Review Mode</a>
+    </nav>
     <div id="mainContent">
         <h1>Image Categorizer</h1>
         <div class="stats">
