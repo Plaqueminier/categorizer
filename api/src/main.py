@@ -27,11 +27,11 @@ app.mount("/static_no", StaticFiles(directory="../no"), name="no_images")
 
 
 class TransferModel(nn.Module):
-    def __init__(self, pretrained=False):
+    def __init__(self):
         super(TransferModel, self).__init__()
 
-        # Use ResNet18 with same architecture as training
-        self.resnet = models.resnet18(pretrained=pretrained)
+        # Use ResNet18 with updated weights parameter instead of pretrained
+        self.resnet = models.resnet18(weights=None)
 
         # Add batch normalization and dropout layers
         self.resnet.layer1 = nn.Sequential(
@@ -80,8 +80,12 @@ class Classifier:
         # Initialize model
         self.model = TransferModel()
 
-        # Load model weights
-        checkpoint = torch.load(model_path, map_location=self.device)
+        # Load model weights with weights_only=True for security
+        checkpoint = torch.load(
+            model_path, 
+            map_location=self.device,
+            weights_only=True
+        )
 
         # Handle different saving formats
         if "model_state_dict" in checkpoint:

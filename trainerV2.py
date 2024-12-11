@@ -207,9 +207,7 @@ def test(model, test_loader, criterion, device):
 
 
 def main():
-    # Reduced batch size for CPU
     BATCH_SIZE = 16
-    # Reduced epochs for faster training
     NUM_EPOCHS = 100
 
     if torch.backends.mps.is_available():
@@ -250,9 +248,24 @@ def main():
     val_dataset = ImageDataset(root_dir="data/val", transform=val_transform)
     test_dataset = ImageDataset(root_dir="data/test", transform=val_transform)
 
-    print("\nDataset Statistics:")
-    print(f"Training samples: {len(train_dataset)}")
-    print(f"Validation samples: {len(val_dataset)}")
+    # Analyze class distribution
+    total_samples = len(train_dataset)
+    pos_samples = sum(1 for _, label in train_dataset if label == 1)
+    neg_samples = total_samples - pos_samples
+    pos_ratio = (pos_samples / total_samples) * 100
+    neg_ratio = (neg_samples / total_samples) * 100
+
+    print("\nTraining Set Distribution:")
+    print(f"Total samples: {total_samples}")
+    print(f"Positive samples (yes): {pos_samples} ({pos_ratio:.2f}%)")
+    print(f"Negative samples (no): {neg_samples} ({neg_ratio:.2f}%)")
+    print(f"Positive/Negative ratio: 1:{neg_samples / pos_samples:.2f}")
+
+    # Calculate and display class weights
+    pos_weight = torch.tensor([neg_samples / pos_samples]).to(DEVICE)
+    print(f"\nApplying weight to positive class: {pos_weight.item():.2f}")
+
+    print(f"\nValidation samples: {len(val_dataset)}")
     print(f"Test samples: {len(test_dataset)}")
 
     # Create data loaders
@@ -282,12 +295,6 @@ def main():
 
     # Initialize model and training components
     model = TransferModel(weights=ResNet18_Weights.DEFAULT).to(DEVICE)
-
-    # Calculate class weights
-    total_samples = len(train_dataset)
-    pos_samples = sum(1 for _, label in train_dataset if label == 1)
-    neg_samples = total_samples - pos_samples
-    pos_weight = torch.tensor([neg_samples / pos_samples]).to(DEVICE)
 
     criterion = nn.BCELoss(weight=pos_weight)
 
